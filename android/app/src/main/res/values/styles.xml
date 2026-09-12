@@ -1,0 +1,1 @@
+<resources><style name="Theme.RedmiControl" parent="android:style/Theme.Material.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:colorAccent">#60A5FA</item></style></resources>

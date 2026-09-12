@@ -1,0 +1,11 @@
+android/.gradle/
+android/**/build/
+android/local.properties
+server/data/*.json
+server/data/*.log
+outputs/
+tools/
+work/
+*.log
+.idea/
+*.iml
