@@ -33,7 +33,21 @@ object RootHelper {
                 if (target !in serviceTargets) return Result.failure(IllegalArgumentException("service_not_allowed"))
                 return Result.failure(UnsupportedOperationException("service_adapter_not_configured"))
             }
-            "set-cpu-mode" -> return Result.failure(UnsupportedOperationException("cpu_adapter_not_configured"))
+            "set-cpu-mode" -> {
+                if (target !in setOf("balanced", "performance", "powersave")) return Result.failure(IllegalArgumentException("cpu_mode_not_allowed"))
+                val script = """
+                    set -eu
+                    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+                      [ -d \"${'$'}policy\" ] || continue
+                      available=${'$'}(cat \"${'$'}policy/scaling_available_governors\" 2>/dev/null || true)
+                      selected=\"$target\"
+                      [ \"$target\" = balanced ] && selected=schedutil
+                      echo \" ${'$'}available \" | grep -q \" ${'$'}selected \" || selected=${'$'}(cat \"${'$'}policy/scaling_governor\")
+                      printf \"%s\" \"${'$'}selected\" > \"${'$'}policy/scaling_governor\"
+                    done
+                """.trimIndent()
+                listOf("sh", "-c", script)
+            }
             else -> return Result.failure(IllegalArgumentException("action_not_allowed"))
         }
         return runRoot(command)
@@ -46,5 +60,18 @@ object RootHelper {
         if (process.waitFor() == 0) Result.success(Unit) else Result.failure(IllegalStateException(output.trim().ifEmpty { "root_command_failed" }))
     } catch (error: Exception) {
         Result.failure(error)
+    }
+
+    fun protectPid(pid: Int): Result<Unit> {
+        return runRoot(listOf("sh", "-c", "echo -1000 > /proc/$pid/oom_score_adj"))
+    }
+
+    fun setBatteryCharging(enabled: Boolean): Result<Unit> {
+        val value = if (enabled) "1" else "0"
+        return runRoot(listOf("sh", "-c", "echo $value > /sys/class/power_supply/battery/charging_enabled 2>/dev/null || echo $value > /sys/class/power_supply/battery/input_suspend"))
+    }
+
+    fun enableWirelessAdb(port: Int = 5555): Result<Unit> {
+        return runRoot(listOf("sh", "-c", "setprop service.adb.tcp.port $port && stop adbd && start adbd"))
     }
 }

@@ -2,11 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function sendJson(res, status, body) {
-  res.writeHead(status, {
+  const headers = {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "x-content-type-options": "nosniff"
-  });
+  };
+  const cookie = res.getHeader("set-cookie");
+  if (cookie) headers["set-cookie"] = cookie;
+  res.writeHead(status, headers);
   res.end(JSON.stringify(body));
 }
 

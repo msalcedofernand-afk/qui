@@ -2,10 +2,13 @@ android/.gradle/
 android/**/build/
 android/local.properties
 server/data/*.json
+server/data/*.bak
 server/data/*.log
+server/data/*.sqlite*
 outputs/
 tools/
 work/
 *.log
 .idea/
 *.iml
+node_modules/

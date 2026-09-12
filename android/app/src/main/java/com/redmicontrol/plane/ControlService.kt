@@ -34,16 +34,16 @@ class ControlService : Service() {
     }
 
     private fun eventLoop() {
-        syncProfile()
         while (running) {
             try {
-                val connection = (URL("http://127.0.0.1:3000/api/events").openConnection() as HttpURLConnection).apply {
+                processNextCommand()
+                val connection = (URL("http://127.0.0.1:3000/internal/broker/events").openConnection() as HttpURLConnection).apply {
                     setRequestProperty("Authorization", "Bearer ${BuildConfig.CONTROL_TOKEN}")
                     connectTimeout = 5000
                     readTimeout = 0
                 }
                 connection.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line -> if (running && line.startsWith("event: profile.changed")) syncProfile() }
+                    lines.forEach { line -> if (running && line.startsWith("event: broker.command")) processNextCommand() }
                 }
                 connection.disconnect()
             } catch (_: Exception) {
@@ -52,31 +52,38 @@ class ControlService : Service() {
         }
     }
 
-    private fun syncProfile() {
+    private fun processNextCommand() {
+        if (BuildConfig.CONTROL_TOKEN.isEmpty()) return
+        val next = request("GET", "/internal/broker/commands/next") ?: return
+        val id = next.optString("id")
+        if (id.isEmpty()) return
+        request("POST", "/internal/broker/commands/$id/claim", JSONObject().put("brokerId", "android-root"))
         try {
-            val state = JSONObject(readRootFile("/data/adb/linux/alpine/opt/redmi-control/server/data/state.json"))
-            val profiles = JSONArray(readRootFile("/data/adb/linux/alpine/opt/redmi-control/server/data/profiles.json"))
-            val active = state.optString("activeProfile", "normal")
-            if (active == lastProfile) return
-            updateWakeLock(active == "minecraft")
-            val allManaged = mutableSetOf<String>()
-            var selected: JSONObject? = null
-            for (index in 0 until profiles.length()) {
-                val profile = profiles.getJSONObject(index)
-                profile.optJSONArray("freezeApps")?.let { allManaged.addAll(it.toStringList()) }
-                if (profile.optString("id") == active) selected = profile
+            val ok = when (next.optString("type")) {
+                "profile.activate" -> applyProfile(next.optJSONObject("payload")?.optJSONObject("profile"))
+                else -> false
             }
-            allManaged.forEach { RootHelper.apply("unfreeze", it) }
-            // Stop first so suspension releases the app process and its RAM immediately.
-            selected?.optJSONArray("freezeApps")?.toStringList()?.forEach {
-                RootHelper.apply("force-stop", it)
-                RootHelper.apply("freeze", it)
-            }
-            selected?.optJSONArray("stopApps")?.toStringList()?.forEach { RootHelper.apply("force-stop", it) }
-            lastProfile = active
-        } catch (_: Exception) {
-            // The panel may still be starting; retry on the next service tick.
+            request("POST", "/internal/broker/commands/$id/result", JSONObject().put("status", if (ok) "succeeded" else "failed").put("error", if (ok) JSONObject.NULL else "typed_command_failed"))
+        } catch (error: Exception) {
+            request("POST", "/internal/broker/commands/$id/result", JSONObject().put("status", "failed").put("error", error.message ?: "broker_execution_failed"))
         }
+    }
+
+    private fun applyProfile(profile: JSONObject?): Boolean {
+        if (profile == null) return false
+        val active = profile.optString("id", "normal")
+        updateWakeLock(active == "minecraft")
+        val frozen = profile.optJSONArray("freezeApps")?.toStringList() ?: emptyList()
+        val stopped = profile.optJSONArray("stopApps")?.toStringList() ?: emptyList()
+        var ok = true
+        frozen.forEach { pkg ->
+            ok = RootHelper.apply("force-stop", pkg).isSuccess && ok
+            ok = RootHelper.apply("freeze", pkg).isSuccess && ok
+        }
+        stopped.forEach { pkg -> ok = RootHelper.apply("force-stop", pkg).isSuccess && ok }
+        ok = RootHelper.apply("set-cpu-mode", profile.optString("cpuMode", "balanced")).isSuccess && ok
+        lastProfile = active
+        return ok
     }
 
     private fun updateWakeLock(enabled: Boolean) {
@@ -94,11 +101,16 @@ class ControlService : Service() {
         wakeLock = null
     }
 
-    private fun readRootFile(path: String): String {
-        val process = ProcessBuilder("su", "-c", "cat '$path'").start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        process.waitFor(3, TimeUnit.SECONDS)
-        return output
+    private fun request(method: String, path: String, body: JSONObject? = null): JSONObject? {
+        val connection = (URL("http://127.0.0.1:3000$path").openConnection() as HttpURLConnection).apply {
+            requestMethod = method; connectTimeout = 4000; readTimeout = 8000
+            setRequestProperty("Authorization", "Bearer ${BuildConfig.CONTROL_TOKEN}")
+            if (body != null) { doOutput = true; setRequestProperty("Content-Type", "application/json") }
+        }
+        body?.toString()?.toByteArray()?.let { bytes -> connection.outputStream.use { stream -> stream.write(bytes) } }
+        if (connection.responseCode == 204) return null
+        val text = connection.inputStream.bufferedReader().use { it.readText() }
+        return JSONObject(text)
     }
 
     private fun JSONArray.toStringList(): List<String> = List(length()) { index -> getString(index) }

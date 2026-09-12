@@ -8,7 +8,11 @@ import path from "node:path";
 test("control plane health and auth boundary", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "redmi-control-test-"));
   const child = spawn(process.execPath, ["server/index.mjs"], { env: { ...process.env, PORT: "43127", ADMIN_TOKEN: "test-token-123456", DATA_DIR: dataDir } });
-  await new Promise(resolve => setTimeout(resolve, 350));
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try { if ((await fetch("http://127.0.0.1:43127/api/health")).ok) break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   try {
     const health = await fetch("http://127.0.0.1:43127/api/health");
     assert.equal(health.status, 200);
@@ -31,5 +35,9 @@ test("control plane health and auth boundary", async () => {
     assert.equal(revoked.status, 200);
     const deniedAfterRevoke = await fetch("http://127.0.0.1:43127/api/profiles", { headers: { authorization: `Bearer ${issued.token}` } });
     assert.equal(deniedAfterRevoke.status, 401);
-  } finally { child.kill(); fs.rmSync(dataDir, { recursive: true, force: true }); }
+  } finally {
+    child.kill();
+    await new Promise(resolve => child.exitCode !== null ? resolve() : child.once("exit", resolve));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });

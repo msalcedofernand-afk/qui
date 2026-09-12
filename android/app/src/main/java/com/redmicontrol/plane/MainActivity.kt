@@ -36,7 +36,7 @@ private fun ControlPanelWebView() {
                     override fun onPageFinished(view: WebView, url: String) {
                         if (url.startsWith("http://127.0.0.1:3000/") && BuildConfig.CONTROL_TOKEN.isNotEmpty()) {
                             val token = org.json.JSONObject.quote(BuildConfig.CONTROL_TOKEN)
-                            view.evaluateJavascript("if (!localStorage.getItem('control_token')) { localStorage.setItem('control_token', $token); location.reload(); }", null)
+                            view.evaluateJavascript("window.controlPlaneLogin && window.controlPlaneLogin($token);", null)
                         }
                     }
                 }

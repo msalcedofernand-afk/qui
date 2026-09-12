@@ -6,8 +6,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ensureJson, readJson, writeJson } from "./lib/json-store.mjs";
+import { ControlStore } from "./lib/control-store.mjs";
 import { readBody, resolveStaticFile, sendJson } from "./lib/http-utils.mjs";
+import { fetchServerInfo, QueryProtocols } from "minestat-es/lib/index.js";
+import { RconClient } from "@0x0c/rcon";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA = process.env.DATA_DIR || path.join(ROOT, "data");
@@ -16,6 +18,7 @@ fs.mkdirSync(DATA, { recursive: true });
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 if (ADMIN_TOKEN.length < 16) throw new Error("ADMIN_TOKEN must contain at least 16 characters");
+const LEGACY_ROOT_EXECUTOR = process.env.LEGACY_ROOT_EXECUTOR !== "0";
 const ANDROID_CMD = "/system/bin/cmd";
 const ROOT_CONTROL_ENABLED = process.env.ROOT_CONTROL_ENABLED === "1" || fs.existsSync(ANDROID_CMD);
 const clients = new Set();
@@ -49,14 +52,20 @@ const defaultProfiles = [
   { id: "low-power", name: "Bajo consumo", description: "Reduce actividad en segundo plano", freezeApps: ["com.google.android.youtube", "com.google.android.chrome", "com.facebook.katana"], stopApps: [], javaHeap: "128M", cpuMode: "powersave", services: ["tailscale"] }
 ];
 
-ensureJson(profilesPath, defaultProfiles);
-ensureJson(statePath, { activeProfile: "normal", previous: null, audit: [] });
-ensureJson(accessPath, { devices: [] });
-const initialState = readJson(statePath, { activeProfile: "normal", previous: null, audit: [] });
-ensureJson(auditPath, initialState.audit || []);
-if ("audit" in initialState) {
-  delete initialState.audit;
-  writeJson(statePath, initialState);
+const store = new ControlStore(DATA, defaultProfiles);
+function readJson(file, fallback) {
+  if (file === profilesPath) return store.getProfiles(fallback);
+  if (file === statePath) return store.getState(fallback);
+  if (file === accessPath) return { devices: store.getDevices() };
+  if (file === auditPath) return store.getAudit();
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
+}
+function writeJson(file, value) {
+  if (file === profilesPath) return store.setProfiles(value);
+  if (file === statePath) return store.setState(value);
+  if (file === accessPath) return store.setDevices(value.devices || []);
+  if (file === auditPath) return value.forEach(entry => store.prependAudit(entry));
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
 }
 const storedProfiles = readJson(profilesPath, defaultProfiles);
 const minecraftProfile = storedProfiles.find(p => p.id === "minecraft");
@@ -77,8 +86,7 @@ function event(type, data) {
 }
 function audit(action, detail = {}) {
   const entry = { id: crypto.randomUUID(), action, detail, at: new Date().toISOString() };
-  const entries = [entry, ...readJson(auditPath, [])].slice(0, 200);
-  writeJson(auditPath, entries);
+  store.prependAudit(entry);
   event("audit", entry);
 }
 function requestToken(req) {
@@ -93,7 +101,10 @@ function tokenHash(token) {
 function sameSecret(left, right) {
   return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right));
 }
-function identity(req) {
+function parseCookies(req) {
+  return Object.fromEntries((req.headers.cookie || "").split(";").map(part => part.trim().split("=")).filter(pair => pair.length === 2).map(([key, ...value]) => [key, decodeURIComponent(value.join("="))]));
+}
+function bearerIdentity(req) {
   const token = requestToken(req);
   if (!token) return null;
   if (sameSecret(token, ADMIN_TOKEN)) return { id: "bootstrap-owner", name: "Dispositivo local", role: "owner", sourceIp: sourceIp(req) };
@@ -102,6 +113,24 @@ function identity(req) {
   if (!device || (device.allowedIp && device.allowedIp !== sourceIp(req))) return null;
   return { id: device.id, name: device.name, role: device.role, sourceIp: sourceIp(req) };
 }
+function identity(req) {
+  const sessionId = parseCookies(req).rc_session;
+  if (sessionId) {
+    const session = store.getSession(sessionId);
+    if (session && session.expiresAt > Date.now()) return { ...session.actor, sessionId, csrfHash: session.csrfHash };
+    if (session) store.deleteSession(sessionId);
+  }
+  return bearerIdentity(req);
+}
+function mutationAllowed(req, actor) {
+  if (req.method === "GET" || !actor?.sessionId) return true;
+  const origin = req.headers.origin;
+  if (origin && !origin.endsWith(`://${req.headers.host}`)) return false;
+  const csrf = req.headers["x-csrf-token"] || "";
+  return sameSecret(tokenHash(csrf), actor.csrfHash || "");
+}
+function sessionCookie(id, maxAge) { return `rc_session=${encodeURIComponent(id)}; Max-Age=${maxAge}; HttpOnly; SameSite=Strict; Path=/`; }
+function csrfToken() { return crypto.randomBytes(24).toString("base64url"); }
 const roleLevel = { viewer: 1, operator: 2, owner: 3 };
 function hasRole(actor, minimum) {
   return Boolean(actor && (roleLevel[actor.role] || 0) >= roleLevel[minimum]);
@@ -126,7 +155,6 @@ function rootAction(action, pkg) {
 }
 function linuxNumber(file) { try { return Number(fs.readFileSync(file, "utf8").trim()); } catch { return 0; } }
 function memory() {
-  const info = readJson("/dev/null", {});
   if (process.platform !== "linux") return { total: Math.round(os.totalmem() / 1048576), available: Math.round(os.freemem() / 1048576), zramUsed: 0 };
   const lines = fs.existsSync("/proc/meminfo") ? fs.readFileSync("/proc/meminfo", "utf8") : "";
   const get = key => Number(lines.match(new RegExp(`^${key}:\\s+(\\d+)`, "m"))?.[1] || 0) / 1024;
@@ -254,7 +282,16 @@ import net from "node:net";
 function portOpen(host, port) { return new Promise(resolve => { const socket = net.createConnection({ host, port, timeout: 900 }, () => { socket.destroy(); resolve(true); }); socket.on("error", () => resolve(false)); socket.on("timeout", () => { socket.destroy(); resolve(false); }); }); }
 async function minecraftStatus() {
   const proc = processSnapshot();
-  const open = await portOpen(process.env.MC_HOST || "127.0.0.1", Number(process.env.MC_PORT || 25565));
+  const host = process.env.MC_HOST || "127.0.0.1";
+  const port = Number(process.env.MC_PORT || 25565);
+  const open = await portOpen(host, port);
+  let ping = null;
+  let pingError = null;
+  try {
+    if (open) ping = await fetchServerInfo({ address: host, port, timeout: 1200, protocol: QueryProtocols.Modern, ping: true });
+  } catch (error) { pingError = error.message; }
+  const rconConfigured = Boolean(process.env.RCON_PASSWORD_FILE || process.env.RCON_PASSWORD);
+  const rcon = rconConfigured ? await minecraftRconCommand("list", { audit: false }).then(response => ({ online: true, response })).catch(error => ({ online: false, error: error.message })) : { online: false, error: "rcon_not_configured" };
   const log = process.env.MC_LOG || "/opt/crafty/crafty-4/servers/502e3b26-ea8a-4024-9dc7-84cd076e9df6/logs/latest.log";
   let logTail = "";
   const state = readJson(statePath, {});
@@ -262,7 +299,20 @@ async function minecraftStatus() {
     const startedAt = state.consoleStartedAt ? Date.parse(state.consoleStartedAt) : 0;
     if (!startedAt || fs.statSync(log).mtimeMs >= startedAt) logTail = fs.readFileSync(log, "utf8").slice(-12000);
   } catch {}
-  return { status: open ? "online" : proc.javaPid ? "starting" : "offline", host: process.env.PUBLIC_HOST || "100.93.144.107", port: Number(process.env.MC_PORT || 25565), players: 0, maxPlayers: 20, javaPid: proc.javaPid, javaRss: proc.javaRss, portOpen: open, consoleEpoch: state.consoleEpoch || 0, logTail: logTail.slice(-2000) };
+  const online = Boolean(ping?.online);
+  return { status: online ? "online" : proc.javaPid || open ? "starting" : "offline", host: process.env.PUBLIC_HOST || "100.93.144.107", port, players: ping?.players || 0, maxPlayers: ping?.maxPlayers || 0, version: ping?.version || null, description: ping?.motd || null, latencyMs: ping?.pingMs ?? null, javaPid: proc.javaPid, javaRss: proc.javaRss, portOpen: open, checks: { pid: Boolean(proc.javaPid), port: open, ping: online, rcon: rcon.online, errors: { ping: pingError, rcon: rcon.error || null } }, rcon, consoleEpoch: state.consoleEpoch || 0, logTail: logTail.slice(-2000) };
+}
+async function minecraftRconCommand(command, options = {}) {
+  const passwordFile = process.env.RCON_PASSWORD_FILE;
+  const password = passwordFile ? fs.readFileSync(passwordFile, "utf8").trim() : process.env.RCON_PASSWORD;
+  if (!password) throw new Error("rcon_not_configured");
+  const client = new RconClient({ host: process.env.RCON_HOST || "127.0.0.1", port: Number(process.env.RCON_PORT || 25575), password, timeout: 2500 });
+  try {
+    await client.connect();
+    const response = await client.send(command);
+    if (options.audit !== false) audit("minecraft.rcon", { command, response: String(response).slice(0, 1000), actor: options.actor?.id || "system" });
+    return response;
+  } finally { if (client.connected) await client.disconnect().catch(() => {}); }
 }
 async function snapshot() {
   const state = readJson(statePath, { activeProfile: "normal", previous: null, audit: [] });
@@ -334,13 +384,32 @@ async function transitionTo(profile) {
 }
 async function route(req, res, url) {
   if (url.pathname === "/api/health") return json(res, 200, { status: "ok", version: "0.1.0" });
+  if (req.method === "POST" && url.pathname === "/api/auth/session") {
+    const actor = bearerIdentity(req);
+    if (!actor) return json(res, 401, { error: "unauthorized" });
+    store.purgeSessions();
+    const id = crypto.randomBytes(32).toString("base64url");
+    const csrf = csrfToken();
+    store.createSession({ id, actor, csrfHash: tokenHash(csrf), expiresAt: Date.now() + 12 * 60 * 60 * 1000 });
+    res.setHeader("set-cookie", sessionCookie(id, 12 * 60 * 60));
+    return json(res, 200, { actor, csrfToken: csrf, expiresAt: Date.now() + 12 * 60 * 60 * 1000 });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    const sessionId = parseCookies(req).rc_session;
+    if (sessionId) store.deleteSession(sessionId);
+    res.setHeader("set-cookie", sessionCookie("", 0));
+    return json(res, 204, null);
+  }
   if (url.pathname === "/api/events") {
     if (!identity(req)) return json(res, 401, { error: "unauthorized" });
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }); res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`); clients.add(res); req.on("close", () => clients.delete(res)); return;
   }
-  const actor = identity(req);
+  const isBrokerRoute = url.pathname.startsWith("/internal/broker/");
+  const brokerAuthorized = isBrokerRoute && sameSecret(requestToken(req), process.env.BROKER_TOKEN || ADMIN_TOKEN);
+  const actor = isBrokerRoute ? (brokerAuthorized ? { id: "android-root-broker", role: "owner", sourceIp: sourceIp(req) } : null) : identity(req);
   if (!actor) return json(res, 401, { error: "unauthorized" });
-  if (req.method !== "GET" && !hasRole(actor, "operator")) return json(res, 403, { error: "insufficient_role" });
+  if (!isBrokerRoute && !mutationAllowed(req, actor)) return json(res, 403, { error: "csrf_or_origin_rejected" });
+  if (!isBrokerRoute && req.method !== "GET" && !hasRole(actor, "operator")) return json(res, 403, { error: "insufficient_role" });
   if (req.method === "GET" && url.pathname === "/api/device") return json(res, 200, await snapshot());
   if (req.method === "GET" && url.pathname === "/api/stats/live") return json(res, 200, await snapshot());
   if (req.method === "GET" && url.pathname === "/api/minecraft/status") return json(res, 200, await minecraftStatus());
@@ -356,7 +425,54 @@ async function route(req, res, url) {
     if (!profile) return json(res, 404, { error: "profile_not_found" });
     return json(res, 200, { profile: profile.id, plan: profilePlan(profile) });
   }
-  if (req.method === "POST" && url.pathname.match(/^\/api\/profiles\/[^/]+\/activate$/)) { const id = url.pathname.split("/")[3]; const profile = readJson(profilesPath, defaultProfiles).find(p => p.id === id); if (!profile) return json(res, 404, { error: "profile_not_found" }); const result = await transitionTo(profile); return json(res, result.transitionFailed ? 409 : 200, { data: result }); }
+  if (req.method === "POST" && url.pathname.match(/^\/api\/profiles\/[^/]+\/activate$/)) {
+    const id = url.pathname.split("/")[3]; const profile = readJson(profilesPath, defaultProfiles).find(p => p.id === id);
+    if (!profile) return json(res, 404, { error: "profile_not_found" });
+    if (!LEGACY_ROOT_EXECUTOR) {
+      const input = await readBody(req).catch(() => ({}));
+      const key = req.headers["idempotency-key"] || input.idempotencyKey || `${actor.id}:${id}:${Math.floor(Date.now() / 30000)}`;
+      const existing = store.findOperationByIdempotency(key);
+      if (existing) return json(res, 202, { operationId: existing.id, status: existing.status });
+      const operation = store.createOperation({ id: crypto.randomUUID(), type: "profile.activate", status: "queued", idempotencyKey: key, actor, payload: { profileId: id, profile } , expiresAt: Date.now() + 10 * 60 * 1000 });
+      audit("operation.queued", { operationId: operation.id, type: operation.type, profileId: id, actor: actor.id });
+      event("broker.command", { operationId: operation.id, type: operation.type });
+      return json(res, 202, { operationId: operation.id, status: operation.status });
+    }
+    const result = await transitionTo(profile); return json(res, result.transitionFailed ? 409 : 200, { data: result });
+  }
+  if (req.method === "GET" && url.pathname.match(/^\/api\/operations\/[A-Za-z0-9-]+$/)) {
+    const operation = store.getOperation(url.pathname.split("/")[3]);
+    return operation ? json(res, 200, operation) : json(res, 404, { error: "operation_not_found" });
+  }
+  if (url.pathname === "/internal/broker/events") {
+    if (!brokerAuthorized) return json(res, 401, { error: "broker_unauthorized" });
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`); clients.add(res); req.on("close", () => clients.delete(res)); return;
+  }
+  if (url.pathname === "/internal/broker/commands/next") {
+    if (!brokerAuthorized) return json(res, 401, { error: "broker_unauthorized" });
+    const operation = store.nextOperation();
+    if (!operation || operation.expiresAt < Date.now()) return json(res, 204, null);
+    return json(res, 200, operation);
+  }
+  if (req.method === "POST" && url.pathname.match(/^\/internal\/broker\/commands\/[A-Za-z0-9-]+\/(claim|result)$/)) {
+    if (!brokerAuthorized) return json(res, 401, { error: "broker_unauthorized" });
+    const id = url.pathname.split("/")[4]; const action = url.pathname.split("/")[5]; const input = await readBody(req);
+    const operation = store.getOperation(id); if (!operation) return json(res, 404, { error: "operation_not_found" });
+    if (action === "claim") return json(res, 200, store.updateOperation(id, { status: "running", claimedAt: new Date().toISOString(), brokerId: input.brokerId || "android" }));
+    const success = input.status === "succeeded";
+    const updated = store.updateOperation(id, { status: success ? "succeeded" : "failed", result: input.result || null, error: input.error || null });
+    if (operation.type.startsWith("remote.") && operation.payload?.id) {
+      const lease = store.getLease(operation.payload.id);
+      if (lease) { lease.status = success ? "active" : "failed"; lease.error = updated.error || null; store.createLease(lease); }
+    }
+    if (success && operation.type === "profile.activate") {
+      const profile = readJson(profilesPath, defaultProfiles).find(p => p.id === operation.payload.profileId);
+      if (profile) { const state = readJson(statePath, {}); state.previous = state.activeProfile; state.activeProfile = profile.id; writeJson(statePath, state); event("profile.changed", { profile: profile.id }); }
+    }
+    audit(`operation.${updated.status}`, { operationId: id, actor: operation.actor?.id, error: updated.error || null });
+    return json(res, 200, updated);
+  }
   if (req.method === "POST" && url.pathname === "/api/profiles") { if (!hasRole(actor, "owner")) return json(res, 403, { error: "owner_required" }); const input = await readBody(req); const profiles = readJson(profilesPath, defaultProfiles); const profile = { id: input.id || crypto.randomUUID(), name: input.name || "Nuevo perfil", description: input.description || "", freezeMode: input.freezeMode || "conservative", freezeApps: input.freezeApps || [], stopApps: input.stopApps || [], javaHeap: input.javaHeap || "256M", cpuMode: input.cpuMode || "balanced", services: input.services || [] }; profiles.push(profile); writeJson(profilesPath, profiles); audit("profile.create", { id: profile.id, actor: actor.id }); return json(res, 201, { data: profile }); }
   if (req.method === "POST" && url.pathname === "/api/profiles/restore") { const state = readJson(statePath, { activeProfile: "normal", previous: null, audit: [] }); const restore = state.previous || "normal"; const profile = readJson(profilesPath, defaultProfiles).find(p => p.id === restore) || defaultProfiles[0]; const result = await transitionTo(profile); if (result.transitionFailed) return json(res, 409, { error: result.error, result }); const next = readJson(statePath, { activeProfile: restore, previous: null, audit: [] }); next.previous = null; writeJson(statePath, next); audit("profile.restore", { profile: restore, rootApplied: ROOT_CONTROL_ENABLED }); return json(res, 200, { profile: restore, result }); }
   if (req.method === "GET" && url.pathname === "/api/audit") return json(res, 200, { data: readJson(auditPath, []) });
@@ -384,6 +500,29 @@ async function route(req, res, url) {
     device.revoked = true; device.revokedAt = new Date().toISOString(); writeJson(accessPath, access);
     audit("access.device_revoked", { deviceId: id, actor: actor.id }); return json(res, 200, { data: publicDevice(device) });
   }
+  if (req.method === "GET" && url.pathname === "/api/remote/leases") {
+    return json(res, 200, { data: store.listLeases().filter(lease => lease.expiresAt > Date.now()) });
+  }
+  if (req.method === "POST" && /^\/api\/remote\/(ssh|adb)\/leases$/.test(url.pathname)) {
+    if (!hasRole(actor, "owner")) return json(res, 403, { error: "owner_required" });
+    const kind = url.pathname.split("/")[3]; const input = await readBody(req).catch(() => ({}));
+    const max = kind === "ssh" ? 8 * 60 * 60 * 1000 : 60 * 60 * 1000;
+    const requested = Math.max(1, Number(input.minutes || (kind === "ssh" ? 30 : 15))) * 60 * 1000;
+    if (requested > max) return json(res, 400, { error: "lease_too_long", maxMinutes: max / 60000 });
+    const tailnet = tailscaleStatus(); if (tailnet.status !== "online") return json(res, 409, { error: "tailscale_required" });
+    const lease = { id: crypto.randomUUID(), kind, actor: actor.id, createdAt: new Date().toISOString(), expiresAt: Date.now() + requested, status: "queued", allowedNetwork: "tailscale" };
+    store.createLease(lease);
+    const operation = store.createOperation({ id: crypto.randomUUID(), type: `remote.${kind}.lease`, status: "queued", actor, payload: lease, expiresAt: lease.expiresAt });
+    audit("remote.lease.queued", { leaseId: lease.id, kind, operationId: operation.id, actor: actor.id });
+    event("remote.lease", { lease, operationId: operation.id });
+    return json(res, 202, { lease, operationId: operation.id });
+  }
+  if (req.method === "DELETE" && /^\/api\/remote\/leases\/[A-Za-z0-9-]+$/.test(url.pathname)) {
+    if (!hasRole(actor, "owner")) return json(res, 403, { error: "owner_required" });
+    const id = url.pathname.split("/")[4]; const lease = store.getLease(id); if (!lease) return json(res, 404, { error: "lease_not_found" });
+    store.revokeLease(id); audit("remote.lease.revoked", { leaseId: id, actor: actor.id }); event("remote.lease.revoked", { leaseId: id });
+    return json(res, 200, { revoked: true, id });
+  }
   if (req.method === "GET" && url.pathname === "/api/services") {
     const mc = await minecraftStatus();
     const crafty = await portOpen("127.0.0.1", 8443);
@@ -396,13 +535,21 @@ async function route(req, res, url) {
     if (ram.available < 384) data.push({ id: "memory-pressure", name: "Presión de memoria", status: "error", detail: `${ram.available} MB disponibles; zRAM en uso: ${ram.zramUsed} MB` });
     return json(res, 200, { data });
   }
-  if (req.method === "POST" && url.pathname === "/api/minecraft/command") { const input = await readBody(req); if (!input.command || !/^[a-zA-Z0-9 _:/.-]{1,120}$/.test(input.command)) return json(res, 400, { error: "invalid_command" }); return json(res, 503, { error: "minecraft_command_adapter_unavailable", detail: "Configure Crafty API or local-only RCON before enabling commands." }); }
+  if (req.method === "POST" && url.pathname === "/api/minecraft/command") {
+    const input = await readBody(req); const command = String(input.command || "").replace(/^\//, "").trim();
+    if (!/^[a-zA-Z0-9 _:/.-]{1,120}$/.test(command)) return json(res, 400, { error: "invalid_command" });
+    const destructive = /^(stop|restart|op |deop |ban |pardon |whitelist remove |kill|save-all)\b/i.test(command);
+    if (destructive && !hasRole(actor, "owner")) return json(res, 403, { error: "owner_required_for_destructive_command" });
+    if (destructive && req.headers["x-confirm-destructive"] !== "1") return json(res, 409, { error: "destructive_confirmation_required" });
+    try { return json(res, 200, { command, response: await minecraftRconCommand(command, { actor }) }); }
+    catch (error) { return json(res, 503, { error: "minecraft_rcon_unavailable", detail: error.message }); }
+  }
   return json(res, 404, { error: "not_found" });
 }
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    if (url.pathname.startsWith("/api/")) return await route(req, res, url);
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/broker/")) return await route(req, res, url);
     const file = resolveStaticFile(WEB, url.pathname);
     if (!file) return json(res, 403, { error: "forbidden" });
     if (!fs.existsSync(file)) return json(res, 404, { error: "not_found" });

@@ -6,5 +6,9 @@
     "start": "node server/index.mjs",
     "test": "node --test",
     "agentrail:doctor": "agentrail doctor"
+  },
+  "dependencies": {
+    "@0x0c/rcon": "1.0.0",
+    "minestat-es": "4.0.0"
   }
 }
