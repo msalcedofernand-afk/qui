@@ -60,6 +60,7 @@ main { padding: 12px 24px 48px; }
 .command { display: flex; gap: 8px; }
 .command input, .device-form input, .device-form select { border: 1px solid #344865; border-radius: 6px; background: #0d1728; color: #e5e7eb; }
 .command input { flex: 1; padding: 11px; }
+.command-response { min-height: 72px; margin: 12px 0 0; padding: 12px; overflow: auto; border: 1px solid #263246; border-radius: 6px; background: #080d17; color: #bfdbfe; white-space: pre-wrap; overflow-wrap: anywhere; }
 .audit { display: block; }
 .audit strong { overflow-wrap: anywhere; color: #dbeafe; }
 .audit span { display: block; overflow-wrap: anywhere; word-break: break-word; }

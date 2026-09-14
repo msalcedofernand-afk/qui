@@ -186,6 +186,25 @@ function tailscaleStatus() {
   }
   return { status: "offline", interface: null, ip: null };
 }
+function externalNetworkStatus() {
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family !== "IPv4" || entry.internal || !entry.address) continue;
+      const [first, second] = entry.address.split(".").map(Number);
+      if (first === 100 && second >= 64 && second <= 127) continue;
+      return { status: "online", interface: name, ip: entry.address };
+    }
+  }
+  return { status: "offline", interface: null, ip: null };
+}
+function publicMinecraftHost() {
+  if (process.env.PUBLIC_HOST) return process.env.PUBLIC_HOST;
+  const tailnet = tailscaleStatus();
+  if (tailnet.status === "online" && tailnet.ip) return tailnet.ip;
+  const external = externalNetworkStatus();
+  if (external.status === "online" && external.ip) return external.ip;
+  return "127.0.0.1";
+}
 function processSnapshot() {
   if (process.platform !== "linux" || !fs.existsSync("/proc")) return { javaPid: null, javaRss: 0 };
   let javaPid = null, javaRss = 0;
@@ -300,7 +319,7 @@ async function minecraftStatus() {
     if (!startedAt || fs.statSync(log).mtimeMs >= startedAt) logTail = fs.readFileSync(log, "utf8").slice(-12000);
   } catch {}
   const online = Boolean(ping?.online);
-  return { status: online ? "online" : proc.javaPid || open ? "starting" : "offline", host: process.env.PUBLIC_HOST || "100.93.144.107", port, players: ping?.players || 0, maxPlayers: ping?.maxPlayers || 0, version: ping?.version || null, description: ping?.motd || null, latencyMs: ping?.pingMs ?? null, javaPid: proc.javaPid, javaRss: proc.javaRss, portOpen: open, checks: { pid: Boolean(proc.javaPid), port: open, ping: online, rcon: rcon.online, errors: { ping: pingError, rcon: rcon.error || null } }, rcon, consoleEpoch: state.consoleEpoch || 0, logTail: logTail.slice(-2000) };
+  return { status: online ? "online" : proc.javaPid || open ? "starting" : "offline", host: publicMinecraftHost(), port, players: ping?.players || 0, maxPlayers: ping?.maxPlayers || 0, version: ping?.version || null, description: ping?.motd || null, latencyMs: ping?.pingMs ?? null, javaPid: proc.javaPid, javaRss: proc.javaRss, portOpen: open, checks: { pid: Boolean(proc.javaPid), port: open, ping: online, rcon: rcon.online, errors: { ping: pingError, rcon: rcon.error || null } }, rcon, consoleEpoch: state.consoleEpoch || 0, logTail: logTail.slice(-2000) };
 }
 async function minecraftRconCommand(command, options = {}) {
   const passwordFile = process.env.RCON_PASSWORD_FILE;
@@ -528,8 +547,11 @@ async function route(req, res, url) {
     const crafty = await portOpen("127.0.0.1", 8443);
     const ssh = await portOpen("127.0.0.1", 22);
     const tailscale = tailscaleStatus();
+    const external = externalNetworkStatus();
     const state = readJson(statePath, {});
-    const data = [{ id: "crafty", name: "Crafty Controller", status: crafty ? "online" : state.starting?.crafty ? "starting" : "offline", port: 8443 }, { id: "minecraft", name: "Minecraft Paper", status: state.starting?.minecraft ? "starting" : mc.status, port: 25565 }, { id: "tailscale", name: "Tailscale", status: tailscale.status, detail: tailscale.ip ? `${tailscale.interface}: ${tailscale.ip}` : "Sin dirección de tailnet" }, { id: "ssh", name: "SSH", status: ssh ? "online" : "offline", port: 22 }];
+    const networkOnline = tailscale.status === "online" || external.status === "online";
+    const networkDetail = tailscale.ip ? `${tailscale.interface}: ${tailscale.ip}` : external.ip ? `${external.interface}: ${external.ip}` : "Sin dirección de red externa";
+    const data = [{ id: "crafty", name: "Crafty Controller", status: crafty ? "online" : state.starting?.crafty ? "starting" : "offline", port: 8443 }, { id: "minecraft", name: "Minecraft Paper", status: state.starting?.minecraft ? "starting" : mc.status, port: 25565 }, { id: "network", name: tailscale.status === "online" ? "Tailscale" : "Red externa", status: networkOnline ? "online" : "offline", detail: networkDetail }, { id: "ssh", name: "SSH", status: ssh ? "online" : "offline", port: 22 }];
     if (state.starting?.error) data.push({ id: "startup-error", name: "Error de arranque", status: "error", detail: state.starting.error });
     const ram = memory();
     if (ram.available < 384) data.push({ id: "memory-pressure", name: "Presión de memoria", status: "error", detail: `${ram.available} MB disponibles; zRAM en uso: ${ram.zramUsed} MB` });
