@@ -33,6 +33,10 @@ cd android
 
 El artefacto versionado se encuentra en `releases/redmi-control-debug.apk`.
 
+## Descargar el APK
+
+[Descargar directamente el APK de depuración](https://github.com/msalcedofernand-afk/qui/raw/refs/heads/main/releases/redmi-control-debug.apk)
+
 ## Android
 
 En Codespaces, este proyecto usa Java 21. El `devcontainer` lo selecciona para evitar que Gradle tome Java 25, que no es compatible con Gradle 8.9. Si el contenedor ya estaba abierto antes de añadir esta configuración, reconstruye el Codespace con **Rebuild Container** y verifica:
