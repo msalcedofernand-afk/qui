@@ -2,10 +2,14 @@
 
 ## Direcciones
 
-- Panel local: `http://192.168.18.99:3000`
-- Panel Tailscale: `http://100.93.144.107:3000`
-- Crafty: `https://100.93.144.107:8443`
-- Minecraft: `100.93.144.107:25565`
+Las direcciones no deben fijarse en la documentación: el panel las detecta en cada actualización desde las interfaces de red disponibles.
+
+- Panel local: `http://<IP-LAN>:3000`
+- Panel Tailscale: `http://<IP-TAILSCALE>:3000`
+- Crafty: `https://<IP-TAILSCALE-o-IP-LAN>:8443`
+- Minecraft: `<IP anunciada>:<MC_PORT>` (por defecto `25565`)
+
+La API `GET /api/stats/live` devuelve `network.lan`, `network.tailscale` y `minecraft.host`. `PUBLIC_HOST` puede establecer explícitamente el host anunciado; si no existe, se prioriza Tailscale y después la LAN.
 
 ## Verificación
 

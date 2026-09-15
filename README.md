@@ -22,6 +22,8 @@ Variables útiles:
 - `LEGACY_ROOT_EXECUTOR=0`: entrega los cambios de perfil al RootBroker Android mediante SQLite + SSE.
 - `ROOT_CONTROL_ENABLED=1`: activa el adaptador root real cuando esté instalado en Android. En desarrollo queda simulado.
 
+Para preparar una instalación, copia `.env.example` a un archivo de entorno privado y cambia todos los valores `replace-*`. No guardes tokens ni contraseñas en Git. El archivo de contraseña RCON debe tener permisos `0600`.
+
 `ADMIN_TOKEN` es obligatorio y debe tener al menos 16 caracteres. Durante la transición, el APK recibe el secreto por Gradle local; la siguiente fase lo reemplaza por bootstrap con Keystore antes de habilitar SMS, Telegram o SSH:
 
 ```powershell
@@ -32,6 +34,14 @@ cd android
 El artefacto versionado se encuentra en `releases/redmi-control-debug.apk`.
 
 ## Android
+
+En Codespaces, este proyecto usa Java 21. El `devcontainer` lo selecciona para evitar que Gradle tome Java 25, que no es compatible con Gradle 8.9. Si el contenedor ya estaba abierto antes de añadir esta configuración, reconstruye el Codespace con **Rebuild Container** y verifica:
+
+```bash
+java -version
+cd android
+./gradlew assembleDebug
+```
 
 El proyecto Compose está en `android/`. Genera el launcher con WebView, foreground service, WakeLock durante Minecraft y arranque tras reinicio. La integración KernelSU actual admite detener/suspender/restaurar paquetes de una lista controlada; los adaptadores de CPU y servicios siguen deshabilitados hasta validar el kernel y consolidar el `RootBroker`.
 

@@ -3,7 +3,7 @@
 ## Estado Actual
 
 - Paper, Crafty, el panel, Tailscale y el servicio Android funcionan en el dispositivo.
-- Tailscale usa una interfaz Android `tun0` con dirección `100.93.144.107`.
+- Tailscale se detecta dinámicamente desde la interfaz de red disponible; no se debe asumir una IP fija.
 - OpenSSH está instalado en Alpine, pero no está provisionado ni iniciado.
 - La app recibe cambios por SSE; no realiza el antiguo sondeo root cada cinco segundos.
 - Persisten dos ejecutores root, un token bootstrap incrustado, métricas Minecraft parciales y adaptadores root sin implementar.

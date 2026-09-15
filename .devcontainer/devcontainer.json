@@ -1,0 +1,25 @@
+{
+  "name": "Redmi Control Plane",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
+      "jdkDistro": "ms"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    "ghcr.io/devcontainers/features/android-sdk:2": {
+      "platforms": "35",
+      "buildTools": "35.0.0",
+      "platformTools": true
+    }
+  },
+  "remoteEnv": {
+    "JAVA_HOME": "/usr/local/sdkman/candidates/java/current",
+    "ANDROID_HOME": "/opt/android-sdk",
+    "ANDROID_SDK_ROOT": "/opt/android-sdk"
+  },
+  "postCreateCommand": "chmod +x android/gradlew && java -version && node --version",
+  "forwardPorts": [3000]
+}

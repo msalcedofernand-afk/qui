@@ -57,10 +57,14 @@ class ControlService : Service() {
         val next = request("GET", "/internal/broker/commands/next") ?: return
         val id = next.optString("id")
         if (id.isEmpty()) return
-        request("POST", "/internal/broker/commands/$id/claim", JSONObject().put("brokerId", "android-root"))
+        val claimed = request("POST", "/internal/broker/commands/$id/claim", JSONObject().put("brokerId", "android-root"))
+        if (claimed?.optString("status") != "running") return
         try {
             val ok = when (next.optString("type")) {
-                "profile.activate" -> applyProfile(next.optJSONObject("payload")?.optJSONObject("profile"))
+                "profile.activate" -> {
+                    val payload = next.optJSONObject("payload")
+                    applyProfile(payload?.optJSONObject("profile"), payload?.optJSONObject("previousProfile"))
+                }
                 else -> false
             }
             request("POST", "/internal/broker/commands/$id/result", JSONObject().put("status", if (ok) "succeeded" else "failed").put("error", if (ok) JSONObject.NULL else "typed_command_failed"))
@@ -69,19 +73,41 @@ class ControlService : Service() {
         }
     }
 
-    private fun applyProfile(profile: JSONObject?): Boolean {
+    private fun applyProfile(profile: JSONObject?, previousProfile: JSONObject?): Boolean {
         if (profile == null) return false
         val active = profile.optString("id", "normal")
+        val previousActive = previousProfile?.optString("id")?.ifEmpty { lastProfile.ifEmpty { "normal" } }
+            ?: lastProfile.ifEmpty { "normal" }
         updateWakeLock(active == "minecraft")
+        val previousFrozen = previousProfile?.optJSONArray("freezeApps")?.toStringList() ?: emptyList()
         val frozen = profile.optJSONArray("freezeApps")?.toStringList() ?: emptyList()
         val stopped = profile.optJSONArray("stopApps")?.toStringList() ?: emptyList()
+        val unfrozen = mutableListOf<String>()
+        val suspended = mutableListOf<String>()
         var ok = true
+        previousFrozen.filterNot { it in frozen }.forEach { pkg ->
+            val result = RootHelper.apply("unfreeze", pkg)
+            ok = result.isSuccess && ok
+            if (result.isSuccess) unfrozen += pkg
+        }
         frozen.forEach { pkg ->
-            ok = RootHelper.apply("force-stop", pkg).isSuccess && ok
-            ok = RootHelper.apply("freeze", pkg).isSuccess && ok
+            val stoppedResult = RootHelper.apply("force-stop", pkg)
+            val suspendResult = RootHelper.apply("freeze", pkg)
+            ok = stoppedResult.isSuccess && suspendResult.isSuccess && ok
+            if (suspendResult.isSuccess) suspended += pkg
         }
         stopped.forEach { pkg -> ok = RootHelper.apply("force-stop", pkg).isSuccess && ok }
-        ok = RootHelper.apply("set-cpu-mode", profile.optString("cpuMode", "balanced")).isSuccess && ok
+        val cpuMode = profile.optString("cpuMode", "balanced")
+        ok = RootHelper.apply("set-cpu-mode", cpuMode).isSuccess && ok
+        if (!ok) {
+            // Compensate changes already made. force-stop is intentionally not
+            // reversed because restarting arbitrary apps is unsafe.
+            suspended.asReversed().forEach { RootHelper.apply("unfreeze", it) }
+            unfrozen.asReversed().forEach { RootHelper.apply("freeze", it) }
+            previousProfile?.optString("cpuMode")?.takeIf { it.isNotEmpty() }?.let { RootHelper.apply("set-cpu-mode", it) }
+            updateWakeLock(previousActive == "minecraft")
+            return false
+        }
         lastProfile = active
         return ok
     }
@@ -109,7 +135,9 @@ class ControlService : Service() {
         }
         body?.toString()?.toByteArray()?.let { bytes -> connection.outputStream.use { stream -> stream.write(bytes) } }
         if (connection.responseCode == 204) return null
-        val text = connection.inputStream.bufferedReader().use { it.readText() }
+        val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
+        if (connection.responseCode !in 200..299) throw IllegalStateException("control_http_${connection.responseCode}: ${text.take(300)}")
         return JSONObject(text)
     }
 

@@ -9,6 +9,14 @@ outputs/
 tools/
 work/
 *.log
+.env
+.env.*
+!.env.example
 .idea/
 *.iml
 node_modules/
+.tools/
+.tools-musl/
+.tools-musl22/
+.tools-jdk21/
+.tools-android/

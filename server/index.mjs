@@ -19,9 +19,11 @@ const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 if (ADMIN_TOKEN.length < 16) throw new Error("ADMIN_TOKEN must contain at least 16 characters");
 const LEGACY_ROOT_EXECUTOR = process.env.LEGACY_ROOT_EXECUTOR !== "0";
+const TRUSTED_NETWORK_ONLY = process.env.TRUSTED_NETWORK_ONLY === "1";
 const ANDROID_CMD = "/system/bin/cmd";
 const ROOT_CONTROL_ENABLED = process.env.ROOT_CONTROL_ENABLED === "1" || fs.existsSync(ANDROID_CMD);
 const clients = new Set();
+const rateLimits = new Map();
 let previousCpu = null;
 let profileTransition = null;
 const profilesPath = path.join(DATA, "profiles.json");
@@ -94,6 +96,22 @@ function requestToken(req) {
 }
 function sourceIp(req) {
   return (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+}
+function trustedNetwork(ip) {
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  const parts = ip.split(".").map(Number);
+  return parts.length === 4 && parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127;
+}
+function rateLimit(req, key, limit, windowMs = 60_000) {
+  const now = Date.now();
+  const id = `${key}:${sourceIp(req)}`;
+  const current = rateLimits.get(id);
+  if (!current || current.resetAt <= now) {
+    rateLimits.set(id, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= limit;
 }
 function tokenHash(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -185,6 +203,19 @@ function tailscaleStatus() {
     }
   }
   return { status: "offline", interface: null, ip: null };
+}
+function lanAddress() {
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
+    if (name === "lo" || name.startsWith("tailscale")) continue;
+    for (const entry of entries || []) if (entry.family === "IPv4" && !entry.internal) return { interface: name, ip: entry.address };
+  }
+  return { interface: null, ip: null };
+}
+function advertisedHost(tailnet, lan) {
+  if (process.env.PUBLIC_HOST) return { host: process.env.PUBLIC_HOST, source: "PUBLIC_HOST" };
+  if (tailnet.ip) return { host: tailnet.ip, source: "tailscale" };
+  if (lan.ip) return { host: lan.ip, source: "lan" };
+  return { host: "127.0.0.1", source: "loopback" };
 }
 function processSnapshot() {
   if (process.platform !== "linux" || !fs.existsSync("/proc")) return { javaPid: null, javaRss: 0 };
@@ -299,8 +330,8 @@ async function minecraftStatus() {
     const startedAt = state.consoleStartedAt ? Date.parse(state.consoleStartedAt) : 0;
     if (!startedAt || fs.statSync(log).mtimeMs >= startedAt) logTail = fs.readFileSync(log, "utf8").slice(-12000);
   } catch {}
-  const online = Boolean(ping?.online);
-  return { status: online ? "online" : proc.javaPid || open ? "starting" : "offline", host: process.env.PUBLIC_HOST || "100.93.144.107", port, players: ping?.players || 0, maxPlayers: ping?.maxPlayers || 0, version: ping?.version || null, description: ping?.motd || null, latencyMs: ping?.pingMs ?? null, javaPid: proc.javaPid, javaRss: proc.javaRss, portOpen: open, checks: { pid: Boolean(proc.javaPid), port: open, ping: online, rcon: rcon.online, errors: { ping: pingError, rcon: rcon.error || null } }, rcon, consoleEpoch: state.consoleEpoch || 0, logTail: logTail.slice(-2000) };
+  const online = Boolean(ping?.online); const tailnet = tailscaleStatus(); const lan = lanAddress(); const advertised = advertisedHost(tailnet, lan);
+  return { status: online ? "online" : proc.javaPid || open ? "starting" : "offline", host: advertised.host, hostSource: advertised.source, port, players: ping?.players || 0, maxPlayers: ping?.maxPlayers || 0, version: ping?.version || null, description: ping?.motd || null, latencyMs: ping?.pingMs ?? null, javaPid: proc.javaPid, javaRss: proc.javaRss, portOpen: open, checks: { pid: Boolean(proc.javaPid), port: open, ping: online, rcon: rcon.online, errors: { ping: pingError, rcon: rcon.error || null } }, rcon, consoleEpoch: state.consoleEpoch || 0, logTail: logTail.slice(-2000) };
 }
 async function minecraftRconCommand(command, options = {}) {
   const passwordFile = process.env.RCON_PASSWORD_FILE;
@@ -318,7 +349,7 @@ async function snapshot() {
   const state = readJson(statePath, { activeProfile: "normal", previous: null, audit: [] });
   const mc = await minecraftStatus();
   const ram = memory();
-  const tailnet = tailscaleStatus();
+  const tailnet = tailscaleStatus(); const lan = lanAddress();
   const services = { crafty: await portOpen("127.0.0.1", 8443) ? "online" : "offline", minecraft: mc.status, tailscale: tailnet.status, ssh: await portOpen("127.0.0.1", 22) ? "online" : "offline" };
   if (state.starting?.crafty) services.crafty = "starting";
   if (state.starting?.minecraft) services.minecraft = "starting";
@@ -326,7 +357,7 @@ async function snapshot() {
   const warnings = [];
   if (ram.available < 256) warnings.push({ id: "memory-critical", severity: "critical", message: `RAM disponible crítica: ${ram.available} MB` });
   else if (ram.available < 384) warnings.push({ id: "memory-pressure", severity: "warning", message: `Presión de RAM: ${ram.available} MB disponibles` });
-  return { profile: state.activeProfile, ram, cpu: { usage: cpuUsage(), temperature: cpuTemperature() }, services, network: { tailscale: tailnet }, minecraft: mc, warnings, host: os.hostname(), rootControl: ROOT_CONTROL_ENABLED, at: new Date().toISOString() };
+  return { profile: state.activeProfile, ram, cpu: { usage: cpuUsage(), temperature: cpuTemperature() }, services, network: { tailscale: tailnet, lan }, minecraft: mc, warnings, host: os.hostname(), rootControl: ROOT_CONTROL_ENABLED, at: new Date().toISOString() };
 }
 async function applyProfile(profile) {
   const state = readJson(statePath, { activeProfile: "normal", previous: null, audit: [] });
@@ -367,9 +398,23 @@ async function applyProfile(profile) {
     .map(pkg => ({ package: pkg, action: "force-stop", ...rootAction("force-stop", pkg) }));
   state.previous = old;
   state.activeProfile = profile.id;
-  writeJson(statePath, state);
   const failures = [...restored, ...applied, ...stopped].filter(item => !item.ok).map(item => ({ package: item.package, error: item.error || item.suspended?.error || item.forceStopped?.error }));
+  if (failures.length) {
+    const rollback = [];
+    // Undo successful suspensions from this transition. Force-stop is
+    // intentionally not reversed because it is safe to leave an app stopped.
+    for (const item of applied.filter(entry => entry.suspended?.ok)) {
+      rollback.push({ package: item.package, action: "unsuspend", ...rootAction("unsuspend", item.package) });
+    }
+    // Re-apply suspensions that were removed while restoring the previous profile.
+    for (const item of restored.filter(entry => entry.ok)) {
+      rollback.push({ package: item.package, action: "suspend", ...rootAction("suspend", item.package) });
+    }
+    audit("profile.activate_failed", { from: old, to: profile.id, failures, rollback, rootApplied: ROOT_CONTROL_ENABLED });
+    return { ...profile, transitionFailed: true, error: "profile_actions_failed", failures, rollback, rootApplied: ROOT_CONTROL_ENABLED, protectedPackages };
+  }
   audit("profile.activate", { from: old, to: profile.id, restored: restored.length, suspended: applied.length, stopped: stopped.length, failures, rootApplied: ROOT_CONTROL_ENABLED });
+  writeJson(statePath, state);
   event("profile.changed", { profile: profile.id });
   return { ...profile, rootApplied: ROOT_CONTROL_ENABLED, protectedPackages: protectedPackages, restored, applied, stopped, servicesStarted, servicesStopped };
 }
@@ -384,7 +429,9 @@ async function transitionTo(profile) {
 }
 async function route(req, res, url) {
   if (url.pathname === "/api/health") return json(res, 200, { status: "ok", version: "0.1.0" });
+  if (TRUSTED_NETWORK_ONLY && !trustedNetwork(sourceIp(req))) return json(res, 403, { error: "trusted_network_required" });
   if (req.method === "POST" && url.pathname === "/api/auth/session") {
+    if (!rateLimit(req, "auth-session", 10)) return json(res, 429, { error: "rate_limited" });
     const actor = bearerIdentity(req);
     if (!actor) return json(res, 401, { error: "unauthorized" });
     store.purgeSessions();
@@ -402,13 +449,14 @@ async function route(req, res, url) {
   }
   if (url.pathname === "/api/events") {
     if (!identity(req)) return json(res, 401, { error: "unauthorized" });
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }); res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`); clients.add(res); req.on("close", () => clients.delete(res)); return;
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", "x-content-type-options": "nosniff", "x-frame-options": "DENY" }); res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`); clients.add(res); req.on("close", () => clients.delete(res)); return;
   }
   const isBrokerRoute = url.pathname.startsWith("/internal/broker/");
   const brokerAuthorized = isBrokerRoute && sameSecret(requestToken(req), process.env.BROKER_TOKEN || ADMIN_TOKEN);
   const actor = isBrokerRoute ? (brokerAuthorized ? { id: "android-root-broker", role: "owner", sourceIp: sourceIp(req) } : null) : identity(req);
   if (!actor) return json(res, 401, { error: "unauthorized" });
   if (!isBrokerRoute && !mutationAllowed(req, actor)) return json(res, 403, { error: "csrf_or_origin_rejected" });
+  if (!isBrokerRoute && req.method !== "GET" && !rateLimit(req, `mutation:${url.pathname}`, 30)) return json(res, 429, { error: "rate_limited" });
   if (!isBrokerRoute && req.method !== "GET" && !hasRole(actor, "operator")) return json(res, 403, { error: "insufficient_role" });
   if (req.method === "GET" && url.pathname === "/api/device") return json(res, 200, await snapshot());
   if (req.method === "GET" && url.pathname === "/api/stats/live") return json(res, 200, await snapshot());
@@ -433,7 +481,9 @@ async function route(req, res, url) {
       const key = req.headers["idempotency-key"] || input.idempotencyKey || `${actor.id}:${id}:${Math.floor(Date.now() / 30000)}`;
       const existing = store.findOperationByIdempotency(key);
       if (existing) return json(res, 202, { operationId: existing.id, status: existing.status });
-      const operation = store.createOperation({ id: crypto.randomUUID(), type: "profile.activate", status: "queued", idempotencyKey: key, actor, payload: { profileId: id, profile } , expiresAt: Date.now() + 10 * 60 * 1000 });
+      const currentState = readJson(statePath, { activeProfile: "normal" });
+      const currentProfile = readJson(profilesPath, defaultProfiles).find(item => item.id === currentState.activeProfile) || defaultProfiles[0];
+      const operation = store.createOperation({ id: crypto.randomUUID(), type: "profile.activate", status: "queued", idempotencyKey: key, actor, payload: { profileId: id, profile, previousProfile: currentProfile } , expiresAt: Date.now() + 10 * 60 * 1000 });
       audit("operation.queued", { operationId: operation.id, type: operation.type, profileId: id, actor: actor.id });
       event("broker.command", { operationId: operation.id, type: operation.type });
       return json(res, 202, { operationId: operation.id, status: operation.status });
@@ -446,7 +496,7 @@ async function route(req, res, url) {
   }
   if (url.pathname === "/internal/broker/events") {
     if (!brokerAuthorized) return json(res, 401, { error: "broker_unauthorized" });
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive", "x-content-type-options": "nosniff", "x-frame-options": "DENY" });
     res.write(`event: ready\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`); clients.add(res); req.on("close", () => clients.delete(res)); return;
   }
   if (url.pathname === "/internal/broker/commands/next") {
@@ -459,7 +509,16 @@ async function route(req, res, url) {
     if (!brokerAuthorized) return json(res, 401, { error: "broker_unauthorized" });
     const id = url.pathname.split("/")[4]; const action = url.pathname.split("/")[5]; const input = await readBody(req);
     const operation = store.getOperation(id); if (!operation) return json(res, 404, { error: "operation_not_found" });
-    if (action === "claim") return json(res, 200, store.updateOperation(id, { status: "running", claimedAt: new Date().toISOString(), brokerId: input.brokerId || "android" }));
+    if (action === "claim") {
+      const claimed = store.claimOperation(id, input.brokerId || "android");
+      if (!claimed) return json(res, 404, { error: "operation_not_found" });
+      if (claimed.status !== "running") return json(res, 409, claimed);
+      return json(res, 200, claimed);
+    }
+    if (operation.expiresAt && operation.expiresAt < Date.now()) {
+      const expired = store.updateOperation(id, { status: "expired", expiredAt: new Date().toISOString() });
+      return json(res, 409, expired);
+    }
     const success = input.status === "succeeded";
     const updated = store.updateOperation(id, { status: success ? "succeeded" : "failed", result: input.result || null, error: input.error || null });
     if (operation.type.startsWith("remote.") && operation.payload?.id) {
@@ -529,7 +588,7 @@ async function route(req, res, url) {
     const ssh = await portOpen("127.0.0.1", 22);
     const tailscale = tailscaleStatus();
     const state = readJson(statePath, {});
-    const data = [{ id: "crafty", name: "Crafty Controller", status: crafty ? "online" : state.starting?.crafty ? "starting" : "offline", port: 8443 }, { id: "minecraft", name: "Minecraft Paper", status: state.starting?.minecraft ? "starting" : mc.status, port: 25565 }, { id: "tailscale", name: "Tailscale", status: tailscale.status, detail: tailscale.ip ? `${tailscale.interface}: ${tailscale.ip}` : "Sin dirección de tailnet" }, { id: "ssh", name: "SSH", status: ssh ? "online" : "offline", port: 22 }];
+    const data = [{ id: "crafty", name: "Crafty Controller", status: crafty ? "online" : state.starting?.crafty ? "starting" : "offline", port: 8443 }, { id: "minecraft", name: "Minecraft Paper", status: state.starting?.minecraft ? "starting" : mc.status, port: mc.port }, { id: "tailscale", name: "Tailscale", status: tailscale.status, detail: tailscale.ip ? `${tailscale.interface}: ${tailscale.ip}` : "Sin dirección de tailnet" }, { id: "ssh", name: "SSH", status: ssh ? "online" : "offline", port: 22 }];
     if (state.starting?.error) data.push({ id: "startup-error", name: "Error de arranque", status: "error", detail: state.starting.error });
     const ram = memory();
     if (ram.available < 384) data.push({ id: "memory-pressure", name: "Presión de memoria", status: "error", detail: `${ram.available} MB disponibles; zRAM en uso: ${ram.zramUsed} MB` });
@@ -554,8 +613,13 @@ const server = http.createServer(async (req, res) => {
     if (!file) return json(res, 403, { error: "forbidden" });
     if (!fs.existsSync(file)) return json(res, 404, { error: "not_found" });
     const ext = path.extname(file); const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json" }[ext] || "application/octet-stream";
-    res.writeHead(200, { "content-type": `${type}; charset=utf-8` }); fs.createReadStream(file).pipe(res);
+    res.writeHead(200, { "content-type": `${type}; charset=utf-8`, "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'" }); fs.createReadStream(file).pipe(res);
   } catch (error) { json(res, error.statusCode || 500, { error: error.statusCode ? error.message : "internal_error", detail: error.message }); }
 });
 server.listen(PORT, "0.0.0.0", () => console.log(`Control plane listening on http://0.0.0.0:${PORT}`));
-setInterval(async () => { const data = await snapshot(); event("device.stats", data); }, 5000);
+setInterval(async () => {
+  const now = Date.now();
+  for (const [key, value] of rateLimits) if (value.resetAt <= now) rateLimits.delete(key);
+  const data = await snapshot();
+  event("device.stats", data);
+}, 5000);

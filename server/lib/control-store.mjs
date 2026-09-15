@@ -146,8 +146,26 @@ export class ControlStore {
   }
 
   nextOperation() {
-    const row = this.db.prepare("SELECT data FROM operations WHERE status IN ('queued', 'claimed') ORDER BY created_at LIMIT 1").get();
+    const row = this.db.prepare("SELECT data FROM operations WHERE status = 'queued' ORDER BY created_at LIMIT 1").get();
     return row ? JSON.parse(row.data) : null;
+  }
+
+  claimOperation(id, brokerId = "android", now = Date.now()) {
+    const current = this.getOperation(id);
+    if (!current) return null;
+    if (current.expiresAt && current.expiresAt < now) {
+      return this.updateOperation(id, { status: "expired", expiredAt: new Date(now).toISOString() });
+    }
+    const value = {
+      ...current,
+      status: "running",
+      claimedAt: new Date(now).toISOString(),
+      brokerId,
+      updatedAt: new Date(now).toISOString()
+    };
+    const result = this.db.prepare("UPDATE operations SET status = ?, data = ?, updated_at = ? WHERE id = ? AND status = 'queued'")
+      .run(value.status, JSON.stringify(value), value.updatedAt, id);
+    return Number(result.changes) === 1 ? value : this.getOperation(id);
   }
 
   createSession(session) {
