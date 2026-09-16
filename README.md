@@ -35,7 +35,7 @@ El artefacto versionado se encuentra en `releases/redmi-control-debug.apk`.
 
 ## Descargar el APK
 
-[Descargar directamente el APK de depuración K](https://github.com/msalcedofernand-afk/qui/raw/refs/heads/main/releases/redmi-control-debug-K.apk)
+[Descargar directamente el APK de depuración M](https://github.com/msalcedofernand-afk/qui/raw/refs/heads/main/releases/redmi-control-debug-M.apk)
 
 ## Android
 
