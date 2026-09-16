@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo de navegación · Redmi Node</title>
+  <style>
+    :root { font-family: Inter, system-ui, sans-serif; color: #e5e7eb; background: #0b1120; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    button { font: inherit; cursor: pointer; }
+    .shell { display: flex; min-height: 100vh; }
+    .sidebar { width: 240px; flex: 0 0 240px; padding: 24px 14px; border-right: 1px solid #263246; background: #111a2b; }
+    .brand { padding: 0 12px 24px; } .brand small, .eyebrow { color: #93c5fd; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+    .brand h1 { margin: 5px 0 0; font-size: 23px; }
+    nav { display: grid; gap: 6px; } nav button, .mode button { padding: 10px 12px; border: 1px solid transparent; border-radius: 7px; color: #bfdbfe; background: transparent; text-align: left; }
+    nav button:hover, nav button.active { border-color: #344865; background: #18263c; color: #fff; }
+    .content { width: min(100%, 900px); margin: auto; padding: 32px 24px 90px; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 28px; }
+    h2 { margin: 4px 0; font-size: 30px; } p { color: #9ca3af; }
+    .screen { display: none; } .screen.active { display: block; animation: fade .2s ease; }
+    .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .card { padding: 22px; border: 1px solid #263246; border-radius: 10px; background: #111a2b; } .card strong { display: block; margin-top: 10px; font-size: 25px; }
+    .mode { position: fixed; right: 18px; top: 18px; z-index: 5; display: flex; gap: 5px; padding: 5px; border: 1px solid #344865; border-radius: 8px; background: #0d1728; }
+    .mode button { padding: 7px 9px; font-size: 12px; text-align: center; } .mode button.active { background: #2563eb; color: #fff; }
+    .bottom { display: none; }
+    @keyframes fade { from { opacity: .2; transform: translateY(4px); } }
+    @media (max-width: 700px) { .sidebar { width: 190px; flex-basis: 190px; } .cards { grid-template-columns: 1fr; } }
+    body.horizontal .shell { display: block; } body.horizontal .sidebar { display: none; }
+    body.horizontal .topnav { display: flex; gap: 6px; overflow-x: auto; padding: 10px 24px; border-bottom: 1px solid #263246; background: #111a2b; }
+    body.horizontal .topnav button { white-space: nowrap; padding: 9px 12px; border: 1px solid #344865; border-radius: 7px; background: transparent; color: #bfdbfe; }
+    body.horizontal .topnav button.active { background: #2563eb; color: white; }
+    body.footer .shell { display: block; } body.footer .sidebar { display: none; }
+    body.footer .bottom { position: fixed; bottom: 0; left: 0; right: 0; z-index: 4; display: flex; justify-content: center; gap: 6px; overflow-x: auto; padding: 10px; border-top: 1px solid #263246; background: #111a2b; }
+    body.footer .bottom button { white-space: nowrap; padding: 9px 12px; border: 1px solid #344865; border-radius: 7px; background: transparent; color: #bfdbfe; }
+    body.footer .bottom button.active { background: #2563eb; color: white; }
+  </style>
+</head>
+<body class="side">
+  <div class="mode" aria-label="Modelo de navegación">
+    <button data-layout="side" class="active">Lateral</button><button data-layout="horizontal">Cabecera</button><button data-layout="footer">Pie</button>
+  </div>
+  <div class="shell">
+    <aside class="sidebar"><div class="brand"><small>CONTROL PLANE</small><h1>Redmi Node</h1></div><nav></nav></aside>
+    <div class="main"><nav class="topnav" hidden></nav><main class="content"><div class="top"><div><span class="eyebrow">DEMO DE NAVEGACIÓN</span><h2 id="title"></h2><p id="description"></p></div></div><div id="screens"></div></main></div>
+  </div>
+  <nav class="bottom" aria-label="Navegación inferior"></nav>
+  <script>
+    const items = [
+      ['inicio','Inicio','Resumen general del dispositivo'], ['estado','Estado','RAM, CPU, temperatura y conectividad'], ['perfiles','Perfiles','Modos de operación disponibles'], ['servicios','Servicios y apps','Aplicaciones y servicios activos'], ['minecraft','Minecraft','Estado, consola y dirección del servidor'], ['acceso','Acceso remoto','Dispositivos y direcciones autorizadas'], ['auditoria','Auditoría','Historial de acciones recientes']
+    ];
+    const navs = [...document.querySelectorAll('nav:not(.bottom)')]; const bottom = document.querySelector('.bottom'); const screens = document.querySelector('#screens');
+    items.forEach(([id, label, desc], i) => { screens.insertAdjacentHTML('beforeend', `<section class="screen ${i === 0 ? 'active' : ''}" id="screen-${id}"><div class="cards"><article class="card"><span class="eyebrow">${label.toUpperCase()}</span><strong>${label}</strong><p>${desc}. Esta es la pantalla independiente de la demo.</p></article><article class="card"><span class="eyebrow">ACCIÓN RÁPIDA</span><strong>${i === 0 ? 'Todo bajo control' : 'Sin novedades'}</strong><p>Los controles propios de esta sección aparecerían aquí.</p></article></div></section>`); });
+    function buildNav(nav) { items.forEach(([id, label], i) => nav.insertAdjacentHTML('beforeend', `<button data-screen="${id}" class="${i === 0 ? 'active' : ''}">${label}</button>`)); }
+    navs.forEach(buildNav); buildNav(bottom);
+    function select(id) { const item = items.find(x => x[0] === id); document.querySelectorAll('[data-screen]').forEach(b => b.classList.toggle('active', b.dataset.screen === id)); document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === `screen-${id}`)); document.querySelector('#title').textContent = item[1]; document.querySelector('#description').textContent = item[2]; }
+    document.addEventListener('click', e => { if (e.target.dataset.screen) select(e.target.dataset.screen); if (e.target.dataset.layout) { document.body.className = e.target.dataset.layout; document.querySelectorAll('[data-layout]').forEach(b => b.classList.toggle('active', b === e.target)); document.querySelector('.topnav').hidden = e.target.dataset.layout !== 'horizontal'; } });
+    select('inicio');
+  </script>
+</body>
+</html>

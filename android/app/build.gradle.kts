@@ -3,7 +3,7 @@ val controlToken = providers.gradleProperty("CONTROL_TOKEN").orElse("").get()
 
 android { namespace = "com.redmicontrol.plane"; compileSdk = 35
     defaultConfig {
-        applicationId = "com.redmicontrol.plane"; minSdk = 29; targetSdk = 35; versionCode = 1; versionName = "0.1.0"
+        applicationId = "com.redmicontrol.plane"; minSdk = 29; targetSdk = 35; versionCode = 2; versionName = "0.1.0-K"
         buildConfigField("String", "CONTROL_TOKEN", "\"${controlToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
     }
     buildFeatures { buildConfig = true }
