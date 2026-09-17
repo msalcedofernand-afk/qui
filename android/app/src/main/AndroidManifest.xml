@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <application android:theme="@style/Theme.RedmiControl" android:label="Redmi Control" android:usesCleartextTraffic="true">
+    <application android:theme="@style/Theme.RedmiControl" android:label="Redmi Control" android:usesCleartextTraffic="true" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /><category android:name="android.intent.category.HOME" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
         </activity>

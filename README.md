@@ -28,14 +28,14 @@ Para preparar una instalación, copia `.env.example` a un archivo de entorno pri
 
 ```powershell
 cd android
-.\gradlew.bat assembleDebug -PCONTROL_TOKEN="token-local-del-dispositivo"
+.\gradlew.bat assembleDebug
 ```
 
-El artefacto versionado se encuentra en `releases/redmi-control-debug.apk`.
+La versión Android actual solicita el endpoint y el token en el primer arranque y los guarda cifrados con Android Keystore. El artefacto de esta migración se genera como `releases/nueva-version.apk`.
 
 ## Descargar el APK
 
-[Descargar directamente el APK de depuración M](https://github.com/msalcedofernand-afk/qui/raw/refs/heads/main/releases/redmi-control-debug-M.apk)
+[Descargar nueva-version.apk](https://github.com/msalcedofernand-afk/qui/raw/refs/heads/main/releases/nueva-version.apk)
 
 ## Android
 
@@ -47,7 +47,7 @@ cd android
 ./gradlew assembleDebug
 ```
 
-El proyecto Compose está en `android/`. Genera el launcher con WebView, foreground service, WakeLock durante Minecraft y arranque tras reinicio. La integración KernelSU actual admite detener/suspender/restaurar paquetes de una lista controlada; los adaptadores de CPU y servicios siguen deshabilitados hasta validar el kernel y consolidar el `RootBroker`.
+El proyecto Compose está en `android/`. Genera el launcher con WebView, foreground service, WakeLock durante Minecraft y arranque tras reinicio. La integración KernelSU actual admite detener/suspender/restaurar paquetes de una lista controlada; los adaptadores de CPU y servicios siguen deshabilitados hasta validar el kernel y consolidar el `RootBroker`. La auditoría completa y el plan de migración están en `docs/ANDROID_MIGRATION_AUDIT.md`.
 
 Consulta `docs/REMOTE_ACCESS_PLAN.md` antes de habilitar SSH, SMS, Telegram o ADB remoto.
 

@@ -1,6 +1,7 @@
 android/.gradle/
 android/**/build/
 android/local.properties
+android/.server-token.tmp
 server/data/*.json
 server/data/*.bak
 server/data/*.log

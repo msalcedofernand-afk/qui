@@ -31,6 +31,7 @@ const statePath = path.join(DATA, "state.json");
 const auditPath = path.join(DATA, "audit.json");
 const accessPath = path.join(DATA, "access.json");
 const craftyLaunchLog = path.join(DATA, "crafty-launch.log");
+const localtonetLog = process.env.LOCALTONET_LOG || path.join(process.env.HOME || "/data/data/com.termux/files/home", "localtonet.log");
 
 const protectedPackages = [
   "android", "com.android.systemui", "com.android.phone", "com.android.settings",
@@ -51,7 +52,8 @@ const defaultProfiles = [
   { id: "minecraft", name: "Servidor Minecraft", description: "Modo agresivo: conserva solo servidor, red y recuperación", freezeMode: "aggressive", freezeApps: ["com.google.android.youtube", "com.google.android.apps.youtube.music", "com.android.chrome", "com.google.android.apps.photos", "com.google.android.videos", "com.google.android.apps.docs", "com.google.android.apps.magazines", "com.roblox.client", "org.fossify.gallery", "com.android.music", "com.davidabel2.RappiGo", "com.grability.rappi", "com.pedidosya"], stopApps: [], javaHeap: "1536M", cpuMode: "performance", services: ["crafty", "minecraft", "tailscale", "ssh"] },
   { id: "web", name: "Servidor web", description: "Para nginx, Node y Python", freezeApps: ["com.google.android.youtube", "com.facebook.katana"], stopApps: [], javaHeap: "256M", cpuMode: "balanced", services: ["nginx", "node", "tailscale", "ssh"] },
   { id: "development", name: "Desarrollo", description: "Herramientas de desarrollo y acceso remoto", freezeApps: [], stopApps: [], javaHeap: "256M", cpuMode: "balanced", services: ["tailscale", "ssh"] },
-  { id: "low-power", name: "Bajo consumo", description: "Reduce actividad en segundo plano", freezeApps: ["com.google.android.youtube", "com.google.android.chrome", "com.facebook.katana"], stopApps: [], javaHeap: "128M", cpuMode: "powersave", services: ["tailscale"] }
+  { id: "low-power", name: "Bajo consumo", description: "Reduce actividad en segundo plano", freezeApps: ["com.google.android.youtube", "com.google.android.chrome", "com.facebook.katana"], stopApps: [], javaHeap: "128M", cpuMode: "powersave", services: ["tailscale"] },
+  { id: "internet-sharing", name: "Compartir Internet", description: "Activa el tethering Wi-Fi de la ROM para compartir la conexión", freezeApps: ["com.google.android.youtube", "com.google.android.apps.youtube.music", "com.google.android.videos", "com.google.android.apps.photos", "com.android.chrome", "com.facebook.katana"], stopApps: [], javaHeap: "256M", cpuMode: "balanced", services: ["tethering", "localtonet", "tailscale"] }
 ];
 
 const store = new ControlStore(DATA, defaultProfiles);
@@ -70,6 +72,10 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
 }
 const storedProfiles = readJson(profilesPath, defaultProfiles);
+if (!storedProfiles.some(p => p.id === "internet-sharing")) {
+  storedProfiles.push(defaultProfiles.find(p => p.id === "internet-sharing"));
+  writeJson(profilesPath, storedProfiles);
+}
 const minecraftProfile = storedProfiles.find(p => p.id === "minecraft");
 if (minecraftProfile) {
   minecraftProfile.freezeMode = "aggressive";
@@ -171,6 +177,11 @@ function rootAction(action, pkg) {
   const result = spawnSync(binary, args, { encoding: "utf8", timeout: 5000 });
   return result.status === 0 ? { ok: true } : { ok: false, error: (result.stderr || result.stdout || "root_command_failed").trim() };
 }
+function setInternetSharing(enabled) {
+  if (!ROOT_CONTROL_ENABLED) return { ok: false, error: "root_unavailable" };
+  const result = spawnSync(ANDROID_CMD, ["connectivity", "tether", enabled ? "start" : "stop", "wifi"], { encoding: "utf8", timeout: 10000 });
+  return result.status === 0 ? { ok: true, command: `connectivity tether ${enabled ? "start" : "stop"} wifi` } : { ok: false, error: (result.stderr || result.stdout || "tethering_command_failed").trim() };
+}
 function linuxNumber(file) { try { return Number(fs.readFileSync(file, "utf8").trim()); } catch { return 0; } }
 function memory() {
   if (process.platform !== "linux") return { total: Math.round(os.totalmem() / 1048576), available: Math.round(os.freemem() / 1048576), zramUsed: 0 };
@@ -216,6 +227,14 @@ function advertisedHost(tailnet, lan) {
   if (tailnet.ip) return { host: tailnet.ip, source: "tailscale" };
   if (lan.ip) return { host: lan.ip, source: "lan" };
   return { host: "127.0.0.1", source: "loopback" };
+}
+function localtonetStatus() {
+  let log = "";
+  try { log = fs.readFileSync(localtonetLog, "utf8"); } catch {}
+  const match = [...log.matchAll(/ADDED\s+([^\s:]+):(\d+)\s+TCP\s+->\s+([^\s:]+):(\d+)/gi)].at(-1);
+  const running = findProcess(cmd => cmd.includes("localtonet")).length > 0;
+  if (!match || !running) return { status: "offline", host: null, port: null, localHost: "127.0.0.1", localPort: Number(process.env.MC_PORT || 25565) };
+  return { status: "online", host: match[1], port: Number(match[2]), localHost: match[3], localPort: Number(match[4]) };
 }
 function processSnapshot() {
   if (process.platform !== "linux" || !fs.existsSync("/proc")) return { javaPid: null, javaRss: 0 };
@@ -350,14 +369,15 @@ async function snapshot() {
   const mc = await minecraftStatus();
   const ram = memory();
   const tailnet = tailscaleStatus(); const lan = lanAddress();
-  const services = { crafty: await portOpen("127.0.0.1", 8443) ? "online" : "offline", minecraft: mc.status, tailscale: tailnet.status, ssh: await portOpen("127.0.0.1", 22) ? "online" : "offline" };
+  const localtonet = localtonetStatus();
+  const services = { crafty: await portOpen("127.0.0.1", 8443) ? "online" : "offline", minecraft: mc.status, tailscale: tailnet.status, localtonet: localtonet.status, ssh: await portOpen("127.0.0.1", 22) ? "online" : "offline" };
   if (state.starting?.crafty) services.crafty = "starting";
   if (state.starting?.minecraft) services.minecraft = "starting";
   if (state.starting?.error) services.error = state.starting.error;
   const warnings = [];
   if (ram.available < 256) warnings.push({ id: "memory-critical", severity: "critical", message: `RAM disponible crítica: ${ram.available} MB` });
   else if (ram.available < 384) warnings.push({ id: "memory-pressure", severity: "warning", message: `Presión de RAM: ${ram.available} MB disponibles` });
-  return { profile: state.activeProfile, ram, cpu: { usage: cpuUsage(), temperature: cpuTemperature() }, services, network: { tailscale: tailnet, lan }, minecraft: mc, warnings, host: os.hostname(), rootControl: ROOT_CONTROL_ENABLED, at: new Date().toISOString() };
+  return { profile: state.activeProfile, ram, cpu: { usage: cpuUsage(), temperature: cpuTemperature() }, services, network: { tailscale: tailnet, lan, localtonet }, minecraft: mc, warnings, host: os.hostname(), rootControl: ROOT_CONTROL_ENABLED, at: new Date().toISOString() };
 }
 async function applyProfile(profile) {
   const state = readJson(statePath, { activeProfile: "normal", previous: null, audit: [] });
@@ -365,6 +385,10 @@ async function applyProfile(profile) {
   const profiles = readJson(profilesPath, defaultProfiles);
   const previous = profiles.find(p => p.id === old);
   let servicesStarted = null;
+  let tethering = null;
+  if (profile.id === "internet-sharing" && old !== "internet-sharing") tethering = setInternetSharing(true);
+  if (profile.id !== "internet-sharing" && old === "internet-sharing") tethering = setInternetSharing(false);
+  if (tethering && !tethering.ok) return { ...profile, transitionFailed: true, error: "internet_sharing_failed", detail: tethering.error, tethering, rootApplied: ROOT_CONTROL_ENABLED };
   if (profile.id === "minecraft" && (!previous?.services?.includes("minecraft") || !(await minecraftStatus()).portOpen)) {
     state.consoleEpoch = (state.consoleEpoch || 0) + 1;
     state.consoleStartedAt = new Date().toISOString();
@@ -413,10 +437,10 @@ async function applyProfile(profile) {
     audit("profile.activate_failed", { from: old, to: profile.id, failures, rollback, rootApplied: ROOT_CONTROL_ENABLED });
     return { ...profile, transitionFailed: true, error: "profile_actions_failed", failures, rollback, rootApplied: ROOT_CONTROL_ENABLED, protectedPackages };
   }
-  audit("profile.activate", { from: old, to: profile.id, restored: restored.length, suspended: applied.length, stopped: stopped.length, failures, rootApplied: ROOT_CONTROL_ENABLED });
+  audit("profile.activate", { from: old, to: profile.id, restored: restored.length, suspended: applied.length, stopped: stopped.length, failures, tethering, rootApplied: ROOT_CONTROL_ENABLED });
   writeJson(statePath, state);
   event("profile.changed", { profile: profile.id });
-  return { ...profile, rootApplied: ROOT_CONTROL_ENABLED, protectedPackages: protectedPackages, restored, applied, stopped, servicesStarted, servicesStopped };
+  return { ...profile, rootApplied: ROOT_CONTROL_ENABLED, protectedPackages: protectedPackages, restored, applied, stopped, servicesStarted, servicesStopped, tethering };
 }
 async function transitionTo(profile) {
   if (profileTransition) return { transitionFailed: true, error: "profile_transition_in_progress" };
@@ -588,7 +612,8 @@ async function route(req, res, url) {
     const ssh = await portOpen("127.0.0.1", 22);
     const tailscale = tailscaleStatus();
     const state = readJson(statePath, {});
-    const data = [{ id: "crafty", name: "Crafty Controller", status: crafty ? "online" : state.starting?.crafty ? "starting" : "offline", port: 8443 }, { id: "minecraft", name: "Minecraft Paper", status: state.starting?.minecraft ? "starting" : mc.status, port: mc.port }, { id: "tailscale", name: "Tailscale", status: tailscale.status, detail: tailscale.ip ? `${tailscale.interface}: ${tailscale.ip}` : "Sin dirección de tailnet" }, { id: "ssh", name: "SSH", status: ssh ? "online" : "offline", port: 22 }];
+    const publicTunnel = localtonetStatus();
+    const data = [{ id: "crafty", name: "Crafty Controller", status: crafty ? "online" : state.starting?.crafty ? "starting" : "offline", port: 8443 }, { id: "minecraft", name: "Minecraft Paper/Forge", status: state.starting?.minecraft ? "starting" : mc.status, port: mc.port }, { id: "localtonet", name: "Localtonet público", status: publicTunnel.status, detail: publicTunnel.host ? `${publicTunnel.host}:${publicTunnel.port} → ${publicTunnel.localHost}:${publicTunnel.localPort}` : "Sin túnel público activo" }, { id: "tailscale", name: "Tailscale", status: tailscale.status, detail: tailscale.ip ? `${tailscale.interface}: ${tailscale.ip}` : "Sin dirección de tailnet" }, { id: "ssh", name: "SSH", status: ssh ? "online" : "offline", port: 22 }];
     if (state.starting?.error) data.push({ id: "startup-error", name: "Error de arranque", status: "error", detail: state.starting.error });
     const ram = memory();
     if (ram.available < 384) data.push({ id: "memory-pressure", name: "Presión de memoria", status: "error", detail: `${ram.available} MB disponibles; zRAM en uso: ${ram.zramUsed} MB` });

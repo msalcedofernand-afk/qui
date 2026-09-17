@@ -36,9 +36,14 @@ class ControlService : Service() {
     private fun eventLoop() {
         while (running) {
             try {
+                val credentials = SecureCredentials.load(this)
+                if (credentials == null) {
+                    Thread.sleep(3000)
+                    continue
+                }
                 processNextCommand()
-                val connection = (URL("http://127.0.0.1:3000/internal/broker/events").openConnection() as HttpURLConnection).apply {
-                    setRequestProperty("Authorization", "Bearer ${BuildConfig.CONTROL_TOKEN}")
+                val connection = (URL("${credentials.endpoint}/internal/broker/events").openConnection() as HttpURLConnection).apply {
+                    setRequestProperty("Authorization", "Bearer ${credentials.token}")
                     connectTimeout = 5000
                     readTimeout = 0
                 }
@@ -53,7 +58,7 @@ class ControlService : Service() {
     }
 
     private fun processNextCommand() {
-        if (BuildConfig.CONTROL_TOKEN.isEmpty()) return
+        if (SecureCredentials.load(this)?.token.isNullOrEmpty()) return
         val next = request("GET", "/internal/broker/commands/next") ?: return
         val id = next.optString("id")
         if (id.isEmpty()) return
@@ -128,9 +133,10 @@ class ControlService : Service() {
     }
 
     private fun request(method: String, path: String, body: JSONObject? = null): JSONObject? {
-        val connection = (URL("http://127.0.0.1:3000$path").openConnection() as HttpURLConnection).apply {
+        val credentials = SecureCredentials.load(this) ?: return null
+        val connection = (URL("${credentials.endpoint}$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method; connectTimeout = 4000; readTimeout = 8000
-            setRequestProperty("Authorization", "Bearer ${BuildConfig.CONTROL_TOKEN}")
+            setRequestProperty("Authorization", "Bearer ${credentials.token}")
             if (body != null) { doOutput = true; setRequestProperty("Content-Type", "application/json") }
         }
         body?.toString()?.toByteArray()?.let { bytes -> connection.outputStream.use { stream -> stream.write(bytes) } }

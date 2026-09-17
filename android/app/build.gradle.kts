@@ -1,12 +1,8 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
-val controlToken = providers.gradleProperty("CONTROL_TOKEN").orElse("").get()
-
 android { namespace = "com.redmicontrol.plane"; compileSdk = 35
     defaultConfig {
-        applicationId = "com.redmicontrol.plane"; minSdk = 29; targetSdk = 35; versionCode = 3; versionName = "0.1.0-M"
-        buildConfigField("String", "CONTROL_TOKEN", "\"${controlToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        applicationId = "com.redmicontrol.plane"; minSdk = 29; targetSdk = 35; versionCode = 4; versionName = "1.0.0"
     }
-    buildFeatures { buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
 }
 kotlin { jvmToolchain(21) }

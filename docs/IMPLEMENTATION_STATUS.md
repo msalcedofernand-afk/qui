@@ -27,13 +27,15 @@ Resultado actual: 3 pruebas correctas, 0 fallos.
 
 ## Pendiente
 
-- El secreto de control todavía se compila dentro del APK; debe migrarse a Android Keystore y emparejamiento temporal.
+- El APK ya no compila el secreto: lo solicita en el primer arranque y lo guarda con Android Keystore. Falta emparejamiento temporal y tokens revocables.
 - Node y Android todavía contienen ejecutores root; el RootBroker debe convertirse en el único ejecutor.
 - El rollback actual es compensatorio: no puede reanudar automáticamente una aplicación que solo fue `force-stop` porque esa acción no tiene una operación inversa segura.
 - Faltan pruebas de concurrencia reales y rollback transaccional completo en el RootBroker Android.
 - El rollback Android todavía depende de que el perfil anterior incluya `freezeApps` y `cpuMode` correctos.
 - El servidor sigue escuchando HTTP en `0.0.0.0`; el acceso debe restringirse a localhost/Tailscale o protegerse con TLS.
-- Faltan rate limiting, pruebas Android/KernelSU y pruebas de recuperación tras pérdida de red.
+- Faltan pruebas Android/KernelSU y pruebas de recuperación tras pérdida de red.
+- La APK generada es debug firmada para instalación directa; falta configurar una clave release propia y publicar la versión firmada.
+- No existen todavía módulos de documentos, firma digital, SMS, Telegram, SSH ni ADB; están solo especificados en los planes.
 
 ## Nota de instalación
 

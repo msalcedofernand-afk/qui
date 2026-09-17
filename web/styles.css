@@ -94,6 +94,17 @@ main { padding: 12px 24px 48px; margin-left: 240px; max-width: calc(1180px + 240
 .inspector-actions { display: flex; justify-content: end; gap: 8px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes screen-in { from { opacity: .25; transform: translateY(4px); } }
+.operation-overlay { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: grid; place-items: end; max-width: calc(100vw - 32px); pointer-events: none; }
+.operation-overlay[hidden] { display: none; }
+.operation-card { width: min(420px, 100%); padding: 16px; border: 1px solid #344865; border-radius: 10px; background: #111a2b; box-shadow: 0 12px 35px #0009; pointer-events: auto; }
+.operation-card h2 { margin: 6px 0; font-size: 22px; }
+.operation-card > p:not(.eyebrow) { margin: 0; color: #9ca3af; }
+.operation-spinner { width: 28px; height: 28px; margin-bottom: 20px; border: 3px solid #344865; border-top-color: #60a5fa; border-radius: 50%; animation: spin .8s linear infinite; }
+.operation-overlay.complete .operation-spinner { border-color: #34d399; animation: none; }
+.operation-overlay.failed .operation-card { border-color: #b45309; }
+.operation-log { max-height: 150px; margin: 18px 0 0; padding: 12px; overflow: auto; border: 1px solid #263246; border-radius: 7px; background: #080d17; color: #a7f3d0; font: 11px/1.6 ui-monospace, monospace; white-space: pre-wrap; }
+.operation-error { margin-top: 12px; padding: 11px; border: 1px solid #7f1d1d; border-radius: 7px; background: #2a1115; color: #fca5a5; font: 12px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
+.operation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 @media (max-width: 760px) {
   .section-nav { position: sticky; top: 0; bottom: auto; width: 100%; height: auto; flex-direction: row; overflow-x: auto; padding: 8px 16px; border-right: 0; border-bottom: 1px solid #263246; }
   .section-nav button { padding: 7px 10px; white-space: nowrap; text-align: center; }
